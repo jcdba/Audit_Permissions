@@ -1,0 +1,183 @@
+DECLARE @command nvarchar(MAX)
+SELECT @command = '
+USE [?]
+IF DB_NAME() = ''tempdb'' BEGIN RETURN END
+SELECT 
+	 db_name() as DBNAME,
+	 sp.name as L_NAME, 
+	 sp.principal_id as L_PRINCIPALID, 
+	 sp.type_desc L_TYPEDESC
+	,dp.name UDB_NAME, 
+	dp.type_desc UDB_TYPEDESC
+	,dp2.name R_NAME
+	,dp2.type_desc
+	, CASE
+		WHEN (select convert(varchar,count(*)) from sys.database_permissions where grantee_principal_id = dp.principal_id and permission_name not in (''CONNECT'')) > 0 THEN ''CUSTOM''
+		WHEN (select convert(varchar,count(*)) from sys.database_permissions where grantee_principal_id = dp.principal_id and permission_name = (''CONNECT'')) = 0 THEN ''CUSTOM (Connect Disabled)''
+		ELSE ''N/A''
+	 END as DB_PERM
+	 	,
+	 dp.sid as DBU_SID
+FROM 
+sys.server_principals sp
+LEFT JOIN sys.database_principals dp on dp.sid = sp.sid
+LEFT JOIN sys.database_role_members drm on drm.member_principal_id = dp.principal_id
+LEFT JOIN sys.database_principals dp2 on dp2.principal_id = drm.role_principal_id 
+WHERE 
+	sp.type not in (''R'', ''C'') 
+	and dp.name is not null
+	and sp.name not like ''##%''
+UNION ALL
+SELECT 
+	 db_name() as DBNAME,
+	 sp.name as L_NAME, 
+	 sp.principal_id as L_PRINCIPALID, 
+	 sp.type_desc L_TYPEDESC
+	,dp.name UDB_NAME, dp.type_desc UDB_TYPEDESC
+	,dp2.name R_NAME
+	,dp2.type_desc
+	, CASE
+		WHEN (select convert(varchar,count(*)) from sys.database_permissions where grantee_principal_id = dp.principal_id and permission_name not in (''CONNECT'')) > 0 THEN ''CUSTOM''
+		ELSE ''N/A''
+	 END as DB_PERM
+	 , dp.sid as DBU_SID
+FROM 
+	sys.database_principals dp
+	LEFT JOIN sys.server_principals sp on sp.sid = dp.sid
+	LEFT JOIN sys.database_role_members drm on drm.member_principal_id = dp.principal_id
+	LEFT JOIN sys.database_principals dp2 on dp2.principal_id = drm.role_principal_id 
+where 
+	sp.sid is null 
+	and dp.is_fixed_role = 0
+	and dp.type not in (''R'')
+	and dp.name not in (''guest'',''INFORMATION_SCHEMA'',''sys'')'
+
+
+DECLARE @LOGIN_WITHOUTUSER TABLE
+(DBNAME nvarchar(max), 
+ L_NAME nvarchar(max), 
+ L_PRINCIPALID integer,
+ L_TYPEDESC nvarchar(max) ,
+ UDB_NAME nvarchar(max),
+ UDB_TYPEDESC nvarchar(max),
+ R_NAME nvarchar(max),
+ U_TYPEDESC nvarchar(max) ,
+ DB_PERM nvarchar(max),
+ DBU_SID varbinary(max)
+);
+
+INSERT  INTO @LOGIN_WITHOUTUSER
+EXEC sp_MSforeachdb @command
+--EXEC (@command)
+
+select 
+getdate() as ProcessingDate
+, convert(varchar(max),SERVERPROPERTY('MachineName')) as ServerName
+, isnull(convert(varchar(max),SERVERPROPERTY('InstanceName')),@@SERVICENAME) as InstanceName
+, CASE WHEN LW.L_NAME IS NULL THEN (CASE WHEN LWR.LWR_NAME IS NULL THEN 'N/A' ELSE LWR.LWR_NAME END) ELSE LW.L_NAME END as Login
+, isnull(LWR.LWR_TYPEDESC,'N/A') as LoginType
+, isnull(convert(varchar,LWR.createdate,121),'N/A') as CreateDate
+, CASE WHEN LWR.Status = 1 THEN 'Disabled' WHEN LWR.Status = 0 THEN 'Enabled' ELSE 'N/A' END as Status
+, CASE WHEN LWR.is_policy_checked = 1 THEN 'Yes' when LWR.is_policy_checked = 0 THEN 'No' else 'N/A' END as is_policy_checked
+, CASE WHEN LWR.is_expiration_checked = 1 THEN 'YES' when LWR.is_expiration_checked = 0 THEN 'NO' else 'N/A' END as is_expiration_checked
+, isnull(LWR.DaysUntilExpiration,'N/A') as DaysUntilExpiration
+, isnull(LWR.ExpirationDate,'N/A') as ExpirationDate
+, isnull(LW.DBNAME,'N/A') as DBName
+, isnull(LW.UDB_NAME,'N/A') as UserName
+, isnull(LW.UDB_TYPEDESC,'N/A') as TypeOfLogin
+, isnull(LW.R_NAME,'N/A') as PermissionLevel
+, isnull(LW.U_TYPEDESC,'N/A') as TypeOfRole
+, isnull(LW.DB_PERM,'N/A') as CustomPermission
+, isnull(LWR.Sysadmin,'N/A') as Sysadmin
+, isnull(LWR.Securityadmin,'N/A') as Securityadmin
+, isnull(LWR.Serveradmin,'N/A') as Serveradmin
+, isnull(LWR.Setupadmin,'N/A') as Setupadmin
+, isnull(LWR.Processadmin,'N/A') as Processadmin
+, isnull(LWR.Diskadmin,'N/A') as Diskadmin
+, isnull(LWR.Dbcreator,'N/A') as Dbcreator
+, isnull(LWR.Bulkadmin,'N/A') as Bulkadmin
+, isnull(LWR.Pub,'N/A') as 'Public'
+from @LOGIN_WITHOUTUSER as LW
+FULL OUTER JOIN (
+SELECT 
+	  sp.name as LWR_NAME
+	, sp.sid AS LWR_SID
+	, sp.type_desc COLLATE Latin1_General_CI_AS as LWR_TYPEDESC
+	, lr.Sysadmin
+	, lr.Securityadmin
+	, lr.Serveradmin
+	, lr.Setupadmin
+	, lr.Processadmin
+	, lr.Diskadmin
+	, lr.Dbcreator
+	, lr.Bulkadmin
+	, lr.Pub
+	, sp.create_date as CreateDate
+	, sp.is_disabled as Status
+	, sp.modify_date as ModifyDate
+	, sl.is_expiration_checked
+	, sl.is_policy_checked
+	, isnull (convert(varchar,LOGINPROPERTY(sl.name,'DaysUntilExpiration')), 'N/A') as DaysUntilExpiration
+    , isnull(convert(varchar,DATEADD(dd,convert(int,LOGINPROPERTY(sl.name,'DaysUntilExpiration')),getdate()),103), 'N/A') as ExpirationDate
+FROM sys.server_principals sp
+JOIN (select 
+				a.UserName, 
+				CASE WHEN sum(a.Sysadmin) >= 1 THEN 'YES' ELSE 'NO' END as Sysadmin, 
+				CASE WHEN sum(a.Securityadmin) >= 1 THEN 'YES' ELSE 'NO' END as Securityadmin, 
+				CASE WHEN sum(a.Serveradmin) >= 1 THEN 'YES' ELSE 'NO' END as Serveradmin, 
+				CASE WHEN sum(a.Setupadmin) >= 1 THEN 'YES' ELSE 'NO' END as Setupadmin, 
+				CASE WHEN sum(a.Processadmin) >= 1 THEN 'YES' ELSE 'NO' END as Processadmin, 
+				CASE WHEN sum(a.Diskadmin) >= 1 THEN 'YES' ELSE 'NO' END as Diskadmin, 
+				CASE WHEN sum(a.Dbcreator) >= 1 THEN 'YES' ELSE 'NO' END as Dbcreator, 
+				CASE WHEN sum(a.Bulkadmin) >= 1 THEN 'YES' ELSE 'NO' END as Bulkadmin, 
+				CASE WHEN sum(a.Pub)  >= 1 THEN 'YES' ELSE 'NO' END as 'Pub'
+			from (
+				SELECT members.name UserName, 
+				CASE 
+					WHEN roles.name = 'sysadmin' THEN 1
+					ELSE 0
+				END as 'Sysadmin',
+				CASE 
+					WHEN roles.name = 'securityadmin' THEN 1
+					ELSE 0
+				END as 'Securityadmin',
+				CASE
+					WHEN roles.name = 'serveradmin' THEN 1
+					ELSE 0
+				END as 'Serveradmin',
+				CASE
+					WHEN roles.name = 'setupadmin' THEN 1
+					ELSE 0
+				END as 'Setupadmin',
+				CASE
+					WHEN roles.name = 'processadmin' THEN 1
+					ELSE 0
+				END as 'Processadmin',
+				CASE
+					WHEN roles.name = 'diskadmin' THEN 1
+					ELSE 0 
+				END as 'Diskadmin',
+				CASE 
+					WHEN roles.name = 'dbcreator' THEN 1
+					ELSE 0
+				END as 'Dbcreator',
+				CASE
+					WHEN roles.name = 'bulkadmin' THEN 1
+					ELSE 0
+				END as 'Bulkadmin',
+				1 as 'Pub'
+				FROM sys.server_role_members AS server_role_members
+				INNER JOIN sys.server_principals AS roles ON server_role_members.role_principal_id = roles.principal_id
+				RIGHT JOIN sys.server_principals AS members ON server_role_members.member_principal_id = members.principal_id  
+				WHERE members.name not like '##%' and members.type not in ('R')
+				) as a
+			group by a.UserName) as lr on sp.name = lr.UserName
+		LEFT JOIN master.sys.sql_logins as sl on sl.sid = sp.sid
+WHERE
+	sp.type not in ('R')
+	and sp.name not like '##%'
+	
+	) as LWR
+	on LWR.LWR_SID = LW.DBU_SID
+order by login
+
